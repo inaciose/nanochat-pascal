@@ -20,7 +20,7 @@ Good old AdamW optimizer, fused kernel.
 https://arxiv.org/abs/1711.05101
 """
 
-@torch.compile(dynamic=False, fullgraph=True)
+#@torch.compile(dynamic=False, fullgraph=True)
 def adamw_step_fused(
     p: Tensor,              # (32768, 768) - parameter tensor
     grad: Tensor,           # (32768, 768) - gradient, same shape as p
@@ -45,8 +45,19 @@ def adamw_step_fused(
     exp_avg32 = exp_avg.float()
     exp_avg_sq32 = exp_avg_sq.float()
     grad32 = grad.float()
+
+    # 1060
+    device = grad32.device
+    step_t  = step_t.to(device)
+    lr_t    = lr_t.to(device)
+    beta1_t = beta1_t.to(device)
+    beta2_t = beta2_t.to(device)
+    eps_t   = eps_t.to(device)
+    wd_t    = wd_t.to(device)
+
     # Weight decay (decoupled, applied before the update)
     p32.mul_(1 - lr_t * wd_t)
+
     # Update running averages (lerp_ is cleaner and fuses well)
     exp_avg32.lerp_(grad32, 1 - beta1_t)
     exp_avg_sq32.lerp_(grad32.square(), 1 - beta2_t)
@@ -108,7 +119,7 @@ polar_express_coeffs = [
 ]
 
 
-@torch.compile(dynamic=False, fullgraph=True)
+#@torch.compile(dynamic=False, fullgraph=True)
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
     stacked_params: Tensor,         # (12, 768, 3072) - stacked parameters
@@ -126,6 +137,14 @@ def muon_step_fused(
     All in one compiled graph to eliminate Python overhead between ops.
     Some of the constants are 0-D CPU tensors to avoid recompilation when values change.
     """
+
+    # 1060
+    device = stacked_grads.device
+
+    momentum_t = momentum_t.to(device)
+    lr_t       = lr_t.to(device)
+    wd_t       = wd_t.to(device)
+    beta2_t    = beta2_t.to(device)
 
     # Nesterov momentum
     momentum = momentum_t.to(stacked_grads.dtype)
@@ -178,6 +197,19 @@ def muon_step_fused(
     wd = wd_t.to(g.dtype)
     mask = (g * stacked_params) >= 0
     stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
+
+if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7:
+    muon_step_fused = torch.compile(
+        muon_step_fused,
+        dynamic=False,
+        fullgraph=True,
+    )
+
+    adamw_step_fused = torch.compile(
+        adamw_step_fused,
+        dynamic=False,
+        fullgraph=True,
+    )
 
 # -----------------------------------------------------------------------------
 
@@ -457,3 +489,4 @@ class MuonAdamW(torch.optim.Optimizer):
 
         # Phase 3: wait for gathers, copy back
         self._finish_gathers(gather_list)
+
