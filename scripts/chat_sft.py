@@ -115,7 +115,11 @@ for name, fallback, source in [
         print0(f"Using {name}={arg_val}")
 
 orig_model = model
-model = torch.compile(model, dynamic=False)
+# 1060
+#model = torch.compile(model, dynamic=False)
+if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7:
+    model = torch.compile(model, dynamic=False)
+
 depth = model.config.n_layer
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
@@ -269,7 +273,9 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         if split == "train":
             current_epoch = epoch
             if args.num_iterations > 0:
-                approx_progress = it / args.num_iterations
+                # xsi bug correction
+                #approx_progress = it / args.num_iterations
+                approx_progress = it / (args.num_iterations * grad_accum_steps)
             else:
                 approx_progress = consumed / dataset_size
             # Trigger last_step when we've consumed enough (instead of when cursor wraps)
