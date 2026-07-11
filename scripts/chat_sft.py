@@ -209,7 +209,13 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         nonlocal cursor, epoch
         while len(conv_buffer) < buffer_size:
             conversation = dataset[cursor]
-            ids, mask = tokenizer.render_conversation(conversation)
+            # ids, mask = tokenizer.render_conversation(conversation)
+            # xsi bug? limit max_tokens
+            # https://github.com/karpathy/nanochat/discussions/677
+            ids, mask = tokenizer.render_conversation(
+                conversation,
+                max_tokens=row_capacity,
+            )
             conv_buffer.append((ids, mask))
             cursor += ddp_world_size
             if cursor >= dataset_size:
@@ -267,6 +273,8 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         # Stopping condition to respect num_iterations, if given
         it += 1
         if 0 < args.num_iterations <= it and split == "train":
+            # debug
+            print(f"last_step by num_iterations: it={it}, limit={args.num_iterations}")
             last_step = True
 
         # Update progress tracking (based on consumed, not cursor, to account for buffering)
@@ -280,6 +288,14 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
                 approx_progress = consumed / dataset_size
             # Trigger last_step when we've consumed enough (instead of when cursor wraps)
             if consumed >= dataset_size:
+                # debug
+                print(
+                    "SETTING last_step:",
+                    "it =", it,
+                    "num_iterations =", args.num_iterations,
+                    "consumed =", consumed,
+                    "dataset_size =", dataset_size,
+                )
                 last_step = True
 
         # Build tensors
@@ -300,6 +316,10 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         for i, content_len in enumerate(row_lengths):
             if content_len < row_capacity:
                 targets[i, content_len-1:] = -1
+
+        # xsi fix nan fix issue (tentative, because it afect the steps counting limit)
+        if (targets != -1).sum() == 0:
+            continue
 
         yield inputs, targets
 
